@@ -1,28 +1,43 @@
+import { useEffect, useState, createContext, useContext } from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
-import { AuthProvider, useAuth } from "./AuthContext";
 
-import * as Auth from "./auth";
+const Authenticate = {
+  get: () => Promise.resolve({ accessToken: 'foo'})
+}
+
+const delay = (ms) => new Promise(res => setTimeout(res, ms))
+
+const initialAuthState = {
+  accessToken: null,
+  error: null,
+};
+
+const AuthContext = createContext(initialAuthState);
+
+const AuthProvider = ({ children }) => {
+  const [authState, setAuthState] = useState(initialAuthState);
+  useEffect(() => {
+    Authenticate.get()
+      .then(setAuthState)
+      // Even though this has a catch handler, the rejected promise still somehow causes
+      // an exception to be thrown in the test
+      .catch((error) => {
+        console.log('Catching authenticate error:', error)
+        setAuthState((prev) => ({ ...prev, error }))
+      });
+  }, []);
+
+  return (
+    <AuthContext.Provider value={authState}>{children}</AuthContext.Provider>
+  );
+};
 
 const accessToken = "secretToken";
 const errorMsg = "why the heck is this being thrown";
 
-jest.mock("./auth", () => {
-  return {
-    authenticateOrRedirect: jest.fn(),
-  };
-});
-
-const emptyAuthState = {
-  accessToken: null,
-  idToken: null,
-  expiresAt: null,
-  tokenRenewalTimeoutId: null,
-  useAuthlessToken: false,
-};
-
 const authStateWithToken = {
-  ...emptyAuthState,
   accessToken,
+  error: null,
 };
 
 const TestComp = () => {
@@ -34,17 +49,18 @@ const TestComp = () => {
 };
 
 const ChildComp = () => {
-  const authState = useAuth();
+  const { accessToken, error } = useContext(AuthContext);
   return (
     <div>
-      <h1 data-testid="accessToken">{authState.accessToken}</h1>
-      <h1 data-testid="error">{authState.error}</h1>
+      <h1 data-testid="accessToken">{accessToken}</h1>
+      <h1 data-testid="error">{error}</h1>
     </div>
   );
 };
 
-it("Sets authState based on the response of authenticateOrRedirect", async () => {
-  Auth.authenticateOrRedirect.mockReturnValue(
+it("Sets authState based on the response of authenticate", async () => {
+  const spy =  jest.spyOn(Authenticate, 'get')
+  spy.mockReturnValue(
     Promise.resolve(authStateWithToken)
   );
 
@@ -56,22 +72,34 @@ it("Sets authState based on the response of authenticateOrRedirect", async () =>
     });
   });
   expect(screen.getByTestId("error")).toHaveTextContent("");
+  spy.mockRestore()
 });
 
 it("Catches error and sets error in authState", async () => {
-  // Somehow this mock Promise reject is being thrown from the waitFor helper
-  Auth.authenticateOrRedirect.mockReturnValue(Promise.reject(errorMsg));
+  const spy = jest.spyOn(Authenticate, 'get')
+  // For some reason this mock Promise reject is being thrown from the waitFor helper
+  spy.mockReturnValue(Promise.reject(errorMsg));
+
+  // If I use `mockRejectedValue`, there's no exception thrown 😕
+  // spy.mockRejectedValue(errorMsg);
+
+  // If I add a little delay, there's no exception thrown 😕😕
+  // spy.mockReturnValue(delay(100).then(() => Promise.reject(errorMsg)));
 
   await act(async () => {
     render(<TestComp />);
+    console.log('acting...')
     await waitFor(() => {
-      // If you uncomment the try-catch, there's no error
-      // try {
-      // ❌❌❌ For some reason this throws the rejected promise 😕
+    //   console.log('Waiting for... what is it?', screen.getByTestId("error").textContent)
+    //   // If you uncomment the try-catch, there's no error
+    //   // try {
+    //   // ❌❌❌ For some reason this throws the rejected promise 😕
       expect(screen.getByTestId("error")).toHaveTextContent(errorMsg);
-      // } catch {}
+      // console.log('after expect')
+    //   // } catch {}
     });
   });
   expect(screen.getByTestId("accessToken")).toHaveTextContent("");
   expect(screen.getByTestId("error")).toHaveTextContent(errorMsg);
+  spy.mockRestore()
 });
